@@ -1,0 +1,151 @@
+import warnings
+warnings.filterwarnings("ignore")
+
+import pygame
+import time
+import subprocess
+from pycaw.pycaw import AudioUtilities
+import re  # needed for removing brackets in device name
+import sys
+import os
+
+# ---- Locate SoundVolumeView.exe ----
+if getattr(sys, 'frozen', False):
+    # Running as bundled exe
+    SCRIPT_DIR = sys._MEIPASS
+else:
+    # Running as script
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SOUNDVOLUME_EXE = os.path.join(SCRIPT_DIR, "SoundVolumeView.exe")
+
+# ---- Initialize controller ----
+pygame.init()
+pygame.joystick.init()
+
+if pygame.joystick.get_count() == 0:
+    print("No controller detected")
+    exit()
+
+joystick = pygame.joystick.Joystick(0)
+joystick.init()
+print("Controller connected:", joystick.get_name())
+
+# ---- Window setup ----
+WIDTH, HEIGHT = 600, 400
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Audio Switcher")
+font = pygame.font.SysFont("Arial", 22)
+BG_COLOR = (30, 30, 30)
+TEXT_COLOR = (220, 220, 220)
+HIGHLIGHT_COLOR = (70, 130, 180)
+
+# ---- Scrolling settings ----
+device_start_y = 120
+device_line_height = 40
+visible_device_count = (HEIGHT - device_start_y) // device_line_height
+scroll_offset = 0
+
+# ---- Functions ----
+def get_devices():
+    """Get playback devices from pycaw and clean the list."""
+    devices = AudioUtilities.GetAllDevices()
+    clean = []
+    seen = set()
+    for d in devices:
+        try:
+            name = getattr(d, "FriendlyName", None)
+            if name and name not in seen:
+                clean.append(d)
+                seen.add(name)
+        except:
+            pass
+    return clean
+
+def draw_menu():
+    """Draw on-screen menu with highlighted selection, legend, and scrolling."""
+    screen.fill(BG_COLOR)
+    
+    # Legend
+    legend = [
+        "D-Pad Up/Down → Navigate",
+        "A → Switch device",
+        "X → Refresh devices",
+        "B → Exit program"
+    ]
+    for i, text_str in enumerate(legend):
+        text = font.render(text_str, True, (200, 200, 200))
+        screen.blit(text, (20, 5 + i * 25))
+    
+    # Device list with scrolling
+    start_idx = scroll_offset
+    end_idx = min(scroll_offset + visible_device_count, len(render_devices))
+    for i in range(start_idx, end_idx):
+        d = render_devices[i]
+        color = HIGHLIGHT_COLOR if i == selected else TEXT_COLOR
+        text = font.render(d.FriendlyName, True, color)
+        screen.blit(text, (20, device_start_y + (i - scroll_offset) * device_line_height))
+    
+    pygame.display.flip()
+
+def set_default(device):
+    """Switch default device using SoundVolumeView, removing trailing brackets."""
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    cmd = f'"{SOUNDVOLUME_EXE}" /SetDefault "{name}" all'
+    print("Running:", cmd)
+    subprocess.run(cmd, shell=True)
+
+# ---- Initial device list ----
+render_devices = get_devices()
+if not render_devices:
+    print("No audio devices found.")
+    exit()
+
+selected = 0
+draw_menu()
+
+# ---- Controller loop ----
+while True:
+    pygame.event.pump()
+    hat = joystick.get_hat(0)
+
+    # D-Pad Up
+    if hat[1] == 1:
+        selected = (selected - 1) % len(render_devices)
+        if selected < scroll_offset:
+            scroll_offset = selected
+        draw_menu()
+        time.sleep(0.2)
+
+    # D-Pad Down
+    if hat[1] == -1:
+        selected = (selected + 1) % len(render_devices)
+        if selected >= scroll_offset + visible_device_count:
+            scroll_offset = selected - visible_device_count + 1
+        draw_menu()
+        time.sleep(0.2)
+
+    # Button states
+    buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+
+    if buttons[0]:  # A button → switch device
+        device = render_devices[selected]
+        print("Selected device:", device.FriendlyName)
+        set_default(device)
+        draw_menu()
+        time.sleep(0.5)
+
+    if buttons[1]:  # B button → exit
+        print("Exiting program.")
+        break
+
+    if buttons[2]:  # X button → refresh device list
+        render_devices = get_devices()
+        selected = 0
+        scroll_offset = 0
+        draw_menu()
+        time.sleep(0.5)
+
+    time.sleep(0.05)
+
+pygame.quit()
