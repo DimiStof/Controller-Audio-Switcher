@@ -1,0 +1,394 @@
+import warnings
+warnings.filterwarnings("ignore")
+
+import pygame
+import subprocess
+from pycaw.pycaw import AudioUtilities
+import re
+import sys
+import os
+
+# ---- Locate SoundVolumeView.exe ----
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = sys._MEIPASS
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SOUNDVOLUME_EXE = os.path.join(SCRIPT_DIR, "SoundVolumeView.exe")
+
+# ---- Pin system ----
+PIN_FILE = os.path.join(SCRIPT_DIR, "pinned_devices.txt")
+# Load pinned devices AND pin-only mode
+
+def load_pins():
+    pins = set()
+    pin_only = False
+    if not os.path.exists(PIN_FILE):
+        return pins, pin_only
+    try:
+        with open(PIN_FILE, "r", encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        for line in lines:
+            if line.startswith("#PIN_ONLY_MODE:"):
+                pin_only = line.split(":")[1] == "1"
+            else:
+                pins.add(line)
+        return pins, pin_only
+    except:
+        return pins, pin_only
+
+
+def save_pins(pins, pin_only=False):
+    try:
+        with open(PIN_FILE, "w", encoding="utf-8") as f:
+            f.write(f"#PIN_ONLY_MODE:{1 if pin_only else 0}\n")
+            for p in pins:
+                f.write(p + "\n")
+    except:
+        print("Failed to save pins")
+
+pinned_devices, pin_only_mode = load_pins()
+
+def toggle_pin_only_mode():
+    global pin_only_mode
+    pin_only_mode = not pin_only_mode
+    save_pins(pinned_devices, pin_only_mode)
+
+# ---- Init pygame ----
+pygame.init()
+pygame.mixer.init()
+pygame.joystick.init()
+
+# ---- Window setup ----
+WIDTH, HEIGHT = 630, 470
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Audio Switcher")
+
+font = pygame.font.SysFont("Arial", 22)
+big_font = pygame.font.SysFont("Arial", 28)
+
+BG_COLOR = (30, 30, 30)
+TEXT_COLOR = (220, 220, 220)
+ERROR_COLOR = (220, 80, 80)
+HIGHLIGHT_COLOR = (70, 130, 180)
+DEFAULT_COLOR = (100, 220, 100)   # green
+PINNED_COLOR = (240, 220, 90)     # yellow
+VOLUME_COLOR = (180, 180, 255)
+
+# ---- Load sounds ----
+SOUND_FILE_SWITCH = os.path.join(SCRIPT_DIR, "switch.wav")
+SOUND_FILE_SELECTED = os.path.join(SCRIPT_DIR, "selected.wav")
+
+try:
+    switch_sound = pygame.mixer.Sound(SOUND_FILE_SWITCH)
+except:
+    switch_sound = None
+    print("No switch.wav found - sound disabled")
+
+try:
+    selected_sound = pygame.mixer.Sound(SOUND_FILE_SELECTED)
+except:
+    selected_sound = None
+    print("No selected.wav found - sound disabled")
+
+# ---- Wait for controller ----
+def wait_for_controller():
+    while True:
+        pygame.joystick.quit()
+        pygame.joystick.init()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                exit()
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_ESCAPE]:
+            pygame.quit()
+            exit()
+        if pygame.joystick.get_count() > 0:
+            joystick = pygame.joystick.Joystick(0)
+            joystick.init()
+            return joystick
+        screen.fill(BG_COLOR)
+        msg1 = big_font.render("No controller detected", True, ERROR_COLOR)
+        msg2 = font.render("Plug one in to continue...", True, TEXT_COLOR)
+        msg3 = font.render("Press ESC or close window to exit", True, TEXT_COLOR)
+        screen.blit(msg1, (WIDTH//2 - msg1.get_width()//2, HEIGHT//2 - 60))
+        screen.blit(msg2, (WIDTH//2 - msg2.get_width()//2, HEIGHT//2))
+        screen.blit(msg3, (WIDTH//2 - msg3.get_width()//2, HEIGHT//2 + 40))
+        pygame.display.flip()
+        pygame.time.delay(200)
+
+# ---- Get controller ----
+if pygame.joystick.get_count() == 0:
+    joystick = wait_for_controller()
+else:
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+    print("Controller connected:", joystick.get_name())
+
+# ---- Scrolling settings ----
+device_start_y = 130  
+device_line_height = 40
+visible_device_count = (HEIGHT - device_start_y) // device_line_height
+scroll_offset = 0
+
+# ---- Functions ----
+def get_devices():
+    devices = AudioUtilities.GetAllDevices()
+    clean = []
+    seen = set()
+
+    for d in devices:
+        try:
+            name = getattr(d, "FriendlyName", None)
+            if name and name not in seen:
+                clean.append(d)
+                seen.add(name)
+        except:
+            pass
+
+    clean.sort(key=lambda d: (d.FriendlyName not in pinned_devices, d.FriendlyName.lower()))
+    return clean
+
+def get_default_device_name():
+    try:
+        default = AudioUtilities.GetSpeakers()
+        return default.FriendlyName  # FULL NAME FIX
+    except:
+        return None
+
+def get_volume_percent(device):
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    try:
+        result = subprocess.run(
+            [SOUNDVOLUME_EXE, "/GetPercent", name],
+            capture_output=True,
+            text=True
+        )
+        percent = int(result.returncode) / 10
+        percent = max(0, min(100, percent))
+        return percent
+    except:
+        return None
+
+def toggle_pin(device):
+    global pinned_devices
+    name = device.FriendlyName
+
+    if name in pinned_devices:
+        pinned_devices.remove(name)
+    else:
+        pinned_devices.add(name)
+
+    save_pins(pinned_devices)
+
+def get_render_devices():
+    devices = get_devices()
+    if pin_only_mode:
+        devices = [d for d in devices if d.FriendlyName in pinned_devices]
+    return devices
+
+render_devices = get_render_devices()
+
+def draw_menu(current_volume="N/A"):
+    screen.fill(BG_COLOR)
+
+    # ---- Legend (tighter columns) ----
+    left_legend = [
+        "D-Pad: Navigate",
+        "A: Switch device",
+        "B: Exit",
+        "X: Reload devices"
+    ]
+
+    right_legend = [
+        "LB/RB: ±5%",
+        "LT/RT: ±20%",
+        "Y: Pin"
+    ]
+
+    for i, text_str in enumerate(left_legend):
+        text = font.render(text_str, True, TEXT_COLOR)
+        screen.blit(text, (20, 5 + i * 25))
+
+    for i, text_str in enumerate(right_legend):
+        text = font.render(text_str, True, TEXT_COLOR)
+        screen.blit(text, (260, 5 + i * 25)) 
+    # ---- Pin Only Mode status ----
+    pin_text = font.render("Back: Pin Only Mode - ", True, TEXT_COLOR)
+    status_color = (0, 200, 0) if pin_only_mode else (220, 220, 220)  # green if ON, red if OFF
+    status_text = font.render("ON" if pin_only_mode else "OFF", True, status_color)
+
+    # Draw the label and status next to it
+    screen.blit(pin_text, (260, -22 + len(left_legend) * 25 + 5))  # below left legend
+    screen.blit(status_text, (445, -22 + len(left_legend) * 25 + 5))  # next to label
+    
+    vol_text = font.render(f"Volume: {current_volume if current_volume is not None else 'N/A'}%", True, VOLUME_COLOR)
+    screen.blit(vol_text, (450, 5))
+
+    # ---- Device list ----
+    default_name = get_default_device_name()
+    start_idx = scroll_offset
+    end_idx = min(scroll_offset + visible_device_count, len(render_devices))
+
+    for i in range(start_idx, end_idx):
+        d = render_devices[i]
+
+        if i == selected:
+            color = HIGHLIGHT_COLOR
+        elif d.FriendlyName == default_name:
+            color = DEFAULT_COLOR
+        elif d.FriendlyName in pinned_devices:
+            color = PINNED_COLOR
+        else:
+            color = TEXT_COLOR
+
+        text = font.render(d.FriendlyName, True, color)
+        screen.blit(text, (20, device_start_y + (i - scroll_offset) * device_line_height))
+
+    pygame.display.flip()
+
+def play_switch_sound():
+    if switch_sound:
+        try:
+            switch_sound.play()
+        except:
+            pass
+
+def play_selected_sound():
+    if selected_sound:
+        try:
+            selected_sound.play()
+        except:
+            pass
+
+def set_default(device):
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    cmd = f'"{SOUNDVOLUME_EXE}" /SetDefault "{name}" all'
+    subprocess.run(cmd, shell=True)
+
+def change_volume(device, amount):
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    cmd = f'"{SOUNDVOLUME_EXE}" /ChangeVolume "{name}" {amount}'
+    subprocess.run(cmd, shell=True)
+
+# ---- Initial device list ----
+render_devices = get_render_devices()  # filter based on pin-only mode
+if not render_devices:
+    pygame.quit()
+    exit()
+
+selected = 0
+current_volume = None
+draw_menu(current_volume)
+
+# ---- Main loop ----
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_ESCAPE]:
+        running = False
+
+    pygame.event.pump()
+    hat = joystick.get_hat(0)
+
+    if hat[1] == 1:
+        selected = (selected - 1) % len(render_devices)
+        
+        # Wrap scroll_offset
+        if selected < scroll_offset:
+            scroll_offset = selected
+        elif selected == len(render_devices) - 1:  # wrapped to bottom
+            scroll_offset = max(0, len(render_devices) - visible_device_count)
+
+        draw_menu(current_volume)
+        play_switch_sound()
+        pygame.time.delay(50)
+
+    elif hat[1] == -1:
+        selected = (selected + 1) % len(render_devices)
+
+        # Wrap scroll_offset
+        if selected >= scroll_offset + visible_device_count:
+            scroll_offset = selected - visible_device_count + 1
+        elif selected == 0:  # wrapped to top
+            scroll_offset = 0
+
+        draw_menu(current_volume)
+        play_switch_sound()
+        pygame.time.delay(50)
+
+    buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+
+    if buttons[0]:
+        device = render_devices[selected]
+        set_default(device)
+        play_selected_sound()
+        current_volume = get_volume_percent(device)
+        draw_menu(current_volume)
+
+    if buttons[1]:
+        running = False
+
+    # Reload devices (X button)
+    if buttons[2]:
+        render_devices = get_render_devices()
+        selected = 0
+        scroll_offset = 0
+        current_volume = None
+        draw_menu(current_volume)
+
+    # Toggle pin (Y button)
+    if len(buttons) > 3 and buttons[3]:
+        device = render_devices[selected]
+        toggle_pin(device)
+        render_devices = get_render_devices()
+        selected = 0
+        scroll_offset = 0
+        draw_menu(current_volume)
+        play_switch_sound()
+
+    if len(buttons) > 5 and buttons[5]:
+        device = render_devices[selected]
+        change_volume(device, 5)
+        current_volume = get_volume_percent(device)
+        draw_menu(current_volume)
+        play_switch_sound()
+
+    if len(buttons) > 4 and buttons[4]:
+        device = render_devices[selected]
+        change_volume(device, -5)
+        current_volume = get_volume_percent(device)
+        draw_menu(current_volume)
+        play_switch_sound()
+    
+    # Toggle pin-only mode (button 6)
+    if len(buttons) > 6 and buttons[6]:
+        toggle_pin_only_mode()
+        render_devices = get_render_devices()
+        selected = 0
+        scroll_offset = 0
+        draw_menu(current_volume)
+        play_switch_sound()   
+
+    if joystick.get_axis(5) > 0.5:
+        device = render_devices[selected]
+        change_volume(device, 20)
+        current_volume = get_volume_percent(device)
+        draw_menu(current_volume)
+        play_switch_sound()
+
+    if joystick.get_axis(4) > 0.5:
+        device = render_devices[selected]
+        change_volume(device, -20)
+        current_volume = get_volume_percent(device)
+        draw_menu(current_volume)
+        play_switch_sound()
+
+    pygame.time.delay(50)
+
+pygame.quit()
