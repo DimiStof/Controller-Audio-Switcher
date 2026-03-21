@@ -1,0 +1,250 @@
+import warnings
+warnings.filterwarnings("ignore")
+
+import pygame
+import subprocess
+from pycaw.pycaw import AudioUtilities
+import re
+import sys
+import os
+
+# ---- Locate SoundVolumeView.exe ----
+if getattr(sys, 'frozen', False):
+    SCRIPT_DIR = sys._MEIPASS
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+
+SOUNDVOLUME_EXE = os.path.join(SCRIPT_DIR, "SoundVolumeView.exe")
+
+# ---- Init pygame ----
+pygame.init()
+pygame.mixer.init()  # For sound playback
+pygame.joystick.init()
+
+# ---- Window setup ----
+WIDTH, HEIGHT = 600, 450
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("Audio Switcher")
+
+font = pygame.font.SysFont("Arial", 22)
+big_font = pygame.font.SysFont("Arial", 28)
+
+BG_COLOR = (30, 30, 30)
+TEXT_COLOR = (220, 220, 220)
+ERROR_COLOR = (220, 80, 80)
+HIGHLIGHT_COLOR = (70, 130, 180)
+DEFAULT_COLOR = (100, 220, 100)
+
+# ---- Load sound ----
+SOUND_FILE = os.path.join(SCRIPT_DIR, "switch.wav")
+try:
+    switch_sound = pygame.mixer.Sound(SOUND_FILE)
+except:
+    switch_sound = None
+    print("No switch.wav found - sound disabled")
+
+# ---- Wait for controller if none detected ----
+def wait_for_controller():
+    while True:
+        pygame.joystick.quit()
+        pygame.joystick.init()
+
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                exit()
+
+        keys = pygame.key.get_pressed()
+        if keys[pygame.K_ESCAPE]:
+            pygame.quit()
+            exit()
+
+        if pygame.joystick.get_count() > 0:
+            joystick = pygame.joystick.Joystick(0)
+            joystick.init()
+            return joystick
+
+        screen.fill(BG_COLOR)
+        msg1 = big_font.render("No controller detected", True, ERROR_COLOR)
+        msg2 = font.render("Plug one in to continue...", True, TEXT_COLOR)
+        msg3 = font.render("Press ESC or close window to exit", True, TEXT_COLOR)
+
+        screen.blit(msg1, (WIDTH//2 - msg1.get_width()//2, HEIGHT//2 - 50))
+        screen.blit(msg2, (WIDTH//2 - msg2.get_width()//2, HEIGHT//2))
+        screen.blit(msg3, (WIDTH//2 - msg3.get_width()//2, HEIGHT//2 + 40))
+
+        pygame.display.flip()
+        pygame.time.delay(50)  # slight delay to reduce CPU usage
+
+# ---- Get controller ----
+if pygame.joystick.get_count() == 0:
+    joystick = wait_for_controller()
+else:
+    joystick = pygame.joystick.Joystick(0)
+    joystick.init()
+    print("Controller connected:", joystick.get_name())
+
+# ---- Scrolling settings ----
+device_start_y = 150
+device_line_height = 40
+visible_device_count = (HEIGHT - device_start_y) // device_line_height
+scroll_offset = 0
+
+# ---- Functions ----
+def get_devices():
+    devices = AudioUtilities.GetAllDevices()
+    clean = []
+    seen = set()
+    for d in devices:
+        try:
+            name = getattr(d, "FriendlyName", None)
+            if name and name not in seen:
+                clean.append(d)
+                seen.add(name)
+        except:
+            pass
+    return clean
+
+def get_default_device_name():
+    try:
+        default = AudioUtilities.GetSpeakers()
+        name = default.FriendlyName
+        return re.split(r"[\(\[]", name)[0].strip()
+    except:
+        return None
+
+def draw_menu(volume_display="N/A"):
+    screen.fill(BG_COLOR)
+
+    legend = [
+        "D-Pad Up/Down → Navigate",
+        "A → Switch device",
+        "RB → Increase volume",
+        "X → Refresh devices",
+        "LB → Decrease volume",
+        "B → Exit program",
+    ]
+    for i, text_str in enumerate(legend):
+        text = font.render(text_str, True, (200, 200, 200))
+        screen.blit(text, (20, 5 + i * 25))
+
+    # Show current volume next to legend
+    vol_text = font.render(f"Volume: {volume_display}%", True, (200, 200, 0))
+    screen.blit(vol_text, (300, 5))
+
+    default_name = get_default_device_name()
+    start_idx = scroll_offset
+    end_idx = min(scroll_offset + visible_device_count, len(render_devices))
+
+    for i in range(start_idx, end_idx):
+        d = render_devices[i]
+        clean_name = re.split(r"[\(\[]", d.FriendlyName)[0].strip()
+
+        if i == selected:
+            color = HIGHLIGHT_COLOR
+        elif clean_name == default_name:
+            color = DEFAULT_COLOR
+        else:
+            color = TEXT_COLOR
+
+        text = font.render(d.FriendlyName, True, color)
+        screen.blit(text, (20, device_start_y + (i - scroll_offset) * device_line_height))
+
+    pygame.display.flip()
+
+def play_switch_sound():
+    if switch_sound:
+        try:
+            switch_sound.play()
+        except:
+            pass
+
+def set_default(device):
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    cmd = f'"{SOUNDVOLUME_EXE}" /SetDefault "{name}" all'
+    subprocess.run(cmd, shell=True)
+
+def change_volume(device, amount):
+    name = re.split(r"[\(\[]", device.FriendlyName)[0].strip()
+    cmd = f'"{SOUNDVOLUME_EXE}" /ChangeVolume "{name}" {amount}'
+    subprocess.run(cmd, shell=True)
+    # Get current volume after change
+    cmd_get = f'"{SOUNDVOLUME_EXE}" /GetPercent "{name}"'
+    result = subprocess.run(cmd_get, shell=True, capture_output=True, text=True)
+    try:
+        vol_percent = int(result.returncode) / 10  # divide by 10 per SoundVolumeView doc
+    except:
+        vol_percent = "N/A"
+    return vol_percent
+
+# ---- Initial device list ----
+render_devices = get_devices()
+if not render_devices:
+    print("No audio devices found.")
+    pygame.quit()
+    exit()
+
+selected = 0
+current_volume = "N/A"
+draw_menu(current_volume)
+
+# ---- Main loop ----
+running = True
+while running:
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+
+    keys = pygame.key.get_pressed()
+    if keys[pygame.K_ESCAPE]:
+        running = False
+
+    pygame.event.pump()
+    hat = joystick.get_hat(0)
+
+    # D-Pad Up/Down with very slight delay
+    if hat[1] == 1:
+        selected = (selected - 1) % len(render_devices)
+        if selected < scroll_offset:
+            scroll_offset = selected
+        draw_menu(current_volume)
+        play_switch_sound()
+        pygame.time.delay(80)  # very slight delay for scrolling
+
+    if hat[1] == -1:
+        selected = (selected + 1) % len(render_devices)
+        if selected >= scroll_offset + visible_device_count:
+            scroll_offset = selected - visible_device_count + 1
+        draw_menu(current_volume)
+        play_switch_sound()
+        pygame.time.delay(80)
+
+    # Buttons
+    buttons = [joystick.get_button(i) for i in range(joystick.get_numbuttons())]
+
+    if buttons[0]:  # A → Switch device
+        device = render_devices[selected]
+        set_default(device)
+        draw_menu(current_volume)
+
+    if buttons[1]:  # B → Exit
+        running = False
+
+    if buttons[2]:  # X → Refresh
+        render_devices = get_devices()
+        selected = 0
+        scroll_offset = 0
+        current_volume = "N/A"
+        draw_menu(current_volume)
+
+    if len(buttons) > 5 and buttons[5]:  # RB → Increase volume
+        device = render_devices[selected]
+        current_volume = change_volume(device, 5)  # +5%
+        draw_menu(current_volume)
+
+    if len(buttons) > 4 and buttons[4]:  # LB → Decrease volume
+        device = render_devices[selected]
+        current_volume = change_volume(device, -5)  # -5%
+        draw_menu(current_volume)
+
+pygame.quit()
