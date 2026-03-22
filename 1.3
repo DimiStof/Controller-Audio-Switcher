@@ -240,11 +240,11 @@ def draw_menu(current_volume="N/A"):
 
     # Draw the label and status next to it
     screen.blit(pin_text, (260, -22 + len(left_legend) * 25 + 5))  # below left legend
-    screen.blit(status_text, (445, -22 + len(left_legend) * 25 + 5))  # next to label
+    screen.blit(status_text, (485, -22 + len(left_legend) * 25 + 5))  # next to label, pretty sure wide version is 485 
     
     # ---- Volume Text ----
     vol_text = font.render(f"Volume: {current_volume if current_volume is not None else 'N/A'}%", True, VOLUME_COLOR)
-    screen.blit(vol_text, (450, 5)) #pretty sure wide version is 485 
+    screen.blit(vol_text, (450, 5)) 
 
     # ---- Muted indicator ----
     if is_device_muted:
