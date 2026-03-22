@@ -14,7 +14,14 @@ if getattr(sys, 'frozen', False):
 else:
     SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+
 SOUNDVOLUME_EXE = os.path.join(SCRIPT_DIR, "SoundVolumeView.exe")
+
+    
+if getattr(sys, "frozen", False):
+    SCRIPT_DIR = os.path.dirname(sys.executable)  # folder of the exe
+else:
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))  # normal script
 
 # ---- Pin system ----
 PIN_FILE = os.path.join(SCRIPT_DIR, "pinned_devices.txt")
@@ -76,8 +83,30 @@ PINNED_COLOR = (240, 220, 90)     # yellow
 VOLUME_COLOR = (180, 180, 255)
 
 # ---- Load sounds ----
-SOUND_FILE_SWITCH = os.path.join(SCRIPT_DIR, "switch.wav")
-SOUND_FILE_SELECTED = os.path.join(SCRIPT_DIR, "selected.wav")
+def resource_path(filename):
+    """
+    Returns the path to a resource, works for PyInstaller onefile exe.
+    """
+    if getattr(sys, "frozen", False):
+        # PyInstaller extracts files to a temp folder
+        return os.path.join(sys._MEIPASS, filename)
+    else:
+        return os.path.join(SCRIPT_DIR, filename)
+
+SOUND_FILE_SWITCH = resource_path("switch.wav")
+SOUND_FILE_SELECTED = resource_path("selected.wav")
+
+try:
+    switch_sound = pygame.mixer.Sound(SOUND_FILE_SWITCH)
+except:
+    switch_sound = None
+    print("No switch.wav found - sound disabled")
+
+try:
+    selected_sound = pygame.mixer.Sound(SOUND_FILE_SELECTED)
+except:
+    selected_sound = None
+    print("No selected.wav found - sound disabled")
 
 try:
     switch_sound = pygame.mixer.Sound(SOUND_FILE_SWITCH)
